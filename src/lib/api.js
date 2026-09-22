@@ -68,28 +68,28 @@ function pickNumber(obj, keys, fallback = 0) {
   return Number.isFinite(num) ? num : fallback;
 }
 
-// ── Stats ───────────────────────────────────────────────────
-export async function fetchStats() {
-  const raw = await callAppsScript({ action: "stats" });
+// ── Stats (reflète le filtre courant : recherche + période) ──
+export async function fetchStats({ q, start, end } = {}) {
+  const raw = await callAppsScript({ action: "stats", q, start, end });
   return {
-    totalRevenue: pickNumber(raw, ["totalRevenue", "chiffreAffaires", "revenue"]),
-    totalOrders: pickNumber(raw, ["totalOrders", "nombreCommandes", "orders"]),
-    totalItems: pickNumber(raw, ["totalItems", "articlesVendus", "items"]),
-    avgOrder: pickNumber(raw, ["avgOrder", "panierMoyen", "averageOrder"]),
+    totalRevenue: pickNumber(raw, ["totalRevenue"]),
+    totalOrders: pickNumber(raw, ["totalOrders"]),
+    totalItems: pickNumber(raw, ["totalItems"]),
+    avgOrder: pickNumber(raw, ["avgOrder"]),
   };
 }
 
 // ── Produits (utile pour un futur écran catalogue) ─────────
 export async function fetchProducts() {
   const raw = await callAppsScript({ action: "products" });
-  const list = Array.isArray(raw) ? raw : raw?.products || raw?.produits || [];
+  const list = Array.isArray(raw) ? raw : raw?.products || [];
   return list.map((p) => ({
-    id: pick(p, ["ID", "id"]),
-    name: pick(p, ["Nom", "name"]),
-    price: pickNumber(p, ["Prix", "Prix ($)", "price"]),
-    category: pick(p, ["Catégorie", "category"]),
-    description: pick(p, ["Description", "description"]),
-    imageUrl: pick(p, ["Image URL", "imageUrl", "image"]),
+    id: pick(p, ["id", "ID"]),
+    name: pick(p, ["name", "Nom"]),
+    price: pickNumber(p, ["price", "Prix", "Prix ($)"]),
+    category: pick(p, ["category", "Catégorie"]),
+    description: pick(p, ["desc", "Description", "description"]),
+    imageUrl: pick(p, ["img", "Image URL", "imageUrl"]),
     active: pick(p, ["Actif", "active"]),
     raw: p,
   }));
@@ -97,38 +97,41 @@ export async function fetchProducts() {
 
 // ── Recherche de commandes ──────────────────────────────────
 function normalizeOrder(o) {
-  const itemsRaw = pick(o, ["items", "produits", "articles", "lignes"], []);
+  const itemsRaw = pick(o, ["items"], []);
   const items = Array.isArray(itemsRaw)
     ? itemsRaw.map((it) => ({
-        product: pick(it, ["Produit", "product", "nom"]),
-        size: pick(it, ["Pointure", "size", "pointure"]),
-        quantity: pickNumber(it, ["Quantité", "quantity", "qty"], 1),
-        unitPrice: pickNumber(it, ["Prix unitaire", "unitPrice", "prixUnitaire"]),
-        lineTotal: pickNumber(it, ["Prix total ligne", "lineTotal", "total"]),
+        product: pick(it, ["produit", "Produit", "product"]),
+        size: pick(it, ["pointure", "Pointure", "size"]),
+        quantity: pickNumber(it, ["quantite", "Quantité", "quantity"], 1),
+        unitPrice: pickNumber(it, ["prixUnitaire", "Prix unitaire ($)", "unitPrice"]),
+        lineTotal: pickNumber(it, ["prixTotalLigne", "Prix total ligne ($)", "lineTotal"]),
       }))
     : [];
 
   return {
-    orderNo: String(pick(o, ["Numéro de commande", "orderNo", "numero", "numeroCommande"])),
-    date: pick(o, ["Date", "date"]),
-    firstName: pick(o, ["Prénom", "firstName", "prenom"]),
-    lastName: pick(o, ["Nom", "lastName", "nom"]),
-    email: pick(o, ["Email", "email"]),
-    whatsapp: pick(o, ["WhatsApp", "whatsapp", "telephone", "phone"]),
-    address: pick(o, ["Adresse de livraison", "address", "adresse"]),
-    city: pick(o, ["Ville de livraison", "city", "ville"]),
-    payment: pick(o, ["Mode de paiement", "payment", "modePaiement"]),
-    total: pickNumber(o, ["Prix total commande", "total", "totalCommande"]),
+    orderNo: String(pick(o, ["orderNo", "Numéro de commande"])),
+    date: pick(o, ["date", "Date"]),
+    firstName: pick(o, ["prenom", "Prénom", "firstName"]),
+    lastName: pick(o, ["nom", "Nom", "lastName"]),
+    email: pick(o, ["email", "Email"]),
+    whatsapp: pick(o, ["whatsapp", "WhatsApp"]),
+    address: pick(o, ["adresse", "Adresse de livraison", "address"]),
+    city: pick(o, ["ville", "Ville de livraison", "city"]),
+    payment: pick(o, ["paiement", "Mode de paiement", "payment"]),
+    total: pickNumber(o, ["total", "Prix total commande ($)"]),
     items,
     raw: o,
   };
 }
 
-export async function searchOrders(query) {
-  const raw = await callAppsScript({ action: "orders", q: query });
-  const list = Array.isArray(raw) ? raw : raw?.orders || raw?.commandes || [];
+export async function fetchOrders({ q, start, end } = {}) {
+  const raw = await callAppsScript({ action: "orders", q, start, end });
+  const list = Array.isArray(raw) ? raw : raw?.orders || [];
   return list.map(normalizeOrder);
 }
+
+// Conservé pour compatibilité si référencé ailleurs
+export const searchOrders = (q) => fetchOrders({ q });
 
 // ── Facture PDF ──────────────────────────────────────────────
 export async function fetchInvoice(orderNo) {
@@ -136,7 +139,18 @@ export async function fetchInvoice(orderNo) {
   const base64 = pick(raw, ["pdf", "base64", "data", "invoice"]);
   const filename = pick(raw, ["filename", "fileName"], `facture-${orderNo}.pdf`);
   if (!base64) {
-    throw new Error("Le script n'a pas renvoyé de PDF pour cette commande.");
+    throw new Error(raw?.error || "Le script n'a pas renvoyé de PDF pour cette commande.");
+  }
+  return { base64, filename };
+}
+
+// ── Rapport PDF (stats + liste des commandes du filtre courant) ──
+export async function fetchReport({ q, start, end } = {}) {
+  const raw = await callAppsScript({ action: "report", q, start, end });
+  const base64 = pick(raw, ["pdf"]);
+  const filename = pick(raw, ["filename"], "rapport-quetzal.pdf");
+  if (!base64) {
+    throw new Error(raw?.error || "Le script n'a pas renvoyé de rapport.");
   }
   return { base64, filename };
 }
